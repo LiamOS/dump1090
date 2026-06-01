@@ -2176,10 +2176,11 @@ void interactiveShowData(void) {
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
     printf(
-"Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages Seen %s\n"
-"--------------------------------------------------------------------------------\n",
+"Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages   Local alt.,az.  Seen %s\n"
+"--------------------------------------------------------------------------------------------------\n",
         progress);
 
+    // TODO: Does local shit go into our aircraft struct or just compute here?
     while(a && count < Modes.interactive_rows) {
         int altitude = a->altitude, speed = a->speed;
 
