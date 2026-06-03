@@ -98,6 +98,11 @@
 #define MODES_CLIENT_BUF_SIZE 1024
 #define MODES_NET_SNDBUF_SIZE (1024*64)
 
+
+// Your LAT/LON here
+#define STATION_LAT 31.003
+#define STATION_LON 35.146
+
 #define MODES_NOTUSED(V) ((void) V)
 
 /* Structure used to describe a networking client. */
@@ -125,6 +130,8 @@ struct aircraft {
     int even_cprlat;
     int even_cprlon;
     double lat, lon;    /* Coordinated obtained from CPR encoded data. */
+    double elevation, bearing;   /* relative to station */
+    double distance;        /* Distance from station to aircraft */
     long long odd_cprtime, even_cprtime;
     struct aircraft *next; /* Next aircraft in our linked list. */
 };
@@ -1840,6 +1847,9 @@ struct aircraft *interactiveCreateAircraft(uint32_t addr) {
     a->even_cprtime = 0;
     a->lat = 0;
     a->lon = 0;
+    a->distance = 0;
+    a->elevation= 0;
+    a->bearing= 0;
     a->seen = time(NULL);
     a->messages = 0;
     a->next = NULL;
@@ -2065,6 +2075,44 @@ int decodeMovementField(int movement) {
     return 175;  /* >= 175 kt */
 }
 
+
+double haversine(double lat1, double lon1, double lat2, double lon2)
+{
+    double R_earth = 6371; // Radius of Earth [km]
+    double lat1r = lat1*0.0174533; // in radians
+    double lon1r = lon1*0.0174533; // in radians
+    double lat2r = lat2*0.0174533; // in radians
+    double lon2r = lon2*0.0174533; // in radians
+    double dlat = (lat1r-lat2r); // difference between target and station latitudes [radian]
+    double dlon = (lon1r-lon2r); // difference between target and station longitudes [radian]
+
+
+    double a = pow(sin(dlat/2), 2) + cos(lat1r)*cos(lat2r)*pow(sin(dlon/2),2);
+    double c = 2*atan2(sqrt(a), sqrt(1-a));
+
+    return R_earth*c;
+}
+
+double bearing(double lat1, double lon1, double lat2, double lon2)
+{
+    double lat1r = lat1*0.0174533; // in radians
+    double lon1r = lon1*0.0174533; // in radians
+    double lat2r = lat2*0.0174533; // in radians
+    double lon2r = lon2*0.0174533; // in radians
+    //double dlat = (lat1r-lat2r); // difference between target and station latitudes [radian]
+    double dlon = (lon1r-lon2r); // difference between target and station longitudes [radian]
+    double theta = atan2(sin(dlon)*cos(lat2r), cos(lat1r)*sin(lat2r) - sin(lat1r)*cos(lat2r)*cos(dlon));
+    //return 180.0*theta/3.14159;
+    return fmod(180*theta/3.14159 + 360,360);
+}
+
+double elevation(double alt, double dist)
+{
+    if (dist == 0.0) return 90.0;
+    alt /= 3.2828; // convert to 21st century unit to do actual maths
+    return atan2(alt, dist*1000)/0.0174533;
+}
+
 /* Receive new messages and populate the interactive mode with more info. */
 struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     uint32_t addr;
@@ -2160,8 +2208,17 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
             }
         }
     }
+    
+    // LIAM
+    if (a->lat !=0 || a->lon !=0)
+    {
+        a->distance  = haversine(STATION_LAT, STATION_LON, a->lat, a->lon);
+        a->bearing   = bearing(STATION_LAT, STATION_LON, a->lat, a->lon);
+        a->elevation = elevation(a->altitude, a->distance);
+    }
     return a;
 }
+
 
 /* Show the currently captured interactive data on screen. */
 void interactiveShowData(void) {
@@ -2176,11 +2233,11 @@ void interactiveShowData(void) {
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
     printf(
-"Hex    Flight   Altitude  Speed   Lat       Lon       Track  Messages   Local alt.,az.  Seen %s\n"
-"--------------------------------------------------------------------------------------------------\n",
+"Hex    Flight   Altitude  Speed   Lat       Lon      Track  Messages   Dist [km] Bear[\u00B0] Elev[\u00B0]   Seen %s\n"
+"------------------------------------------------------------------------------------------------------\n",
         progress);
 
-    // TODO: Does local shit go into our aircraft struct or just compute here?
+    // LIAM
     while(a && count < Modes.interactive_rows) {
         int altitude = a->altitude, speed = a->speed;
 
@@ -2190,9 +2247,10 @@ void interactiveShowData(void) {
             speed *= 1.852;
         }
 
-        printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld %d sec\n",
+        printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f \t%d sec\n",
             a->hexaddr, a->flight, altitude, speed,
             a->lat, a->lon, a->track, a->messages,
+            a->distance, a->bearing, a->elevation,
             (int)(now - a->seen));
         a = a->next;
         count++;
