@@ -99,9 +99,11 @@
 #define MODES_NET_SNDBUF_SIZE (1024*64)
 
 
-// Your LAT/LON here
+#define R_EARTH 6371 // Radius of Earth [km]
+// Your LAT/LON and altitude [m] here
 #define STATION_LAT 31.003
 #define STATION_LON 35.146
+#define STATION_ALT 200
 
 #define MODES_NOTUSED(V) ((void) V)
 
@@ -131,10 +133,16 @@ struct aircraft {
     int even_cprlon;
     double lat, lon;    /* Coordinated obtained from CPR encoded data. */
     double elevation, bearing;   /* relative to station */
-    double distance;        /* Distance from station to aircraft */
+    double distance, los;        /* Distance and line of sight from station to aircraft [km]*/
     long long odd_cprtime, even_cprtime;
     struct aircraft *next; /* Next aircraft in our linked list. */
 };
+
+int compareAircraftDistance(const void* a, const void* b)
+{
+    int R = ((struct aircraft*)a)->distance - ((struct aircraft*)b)->distance;
+    return R;
+}
 
 /* Program global state. */
 struct {
@@ -1848,6 +1856,7 @@ struct aircraft *interactiveCreateAircraft(uint32_t addr) {
     a->lat = 0;
     a->lon = 0;
     a->distance = 0;
+    a->los = 0;
     a->elevation= 0;
     a->bearing= 0;
     a->seen = time(NULL);
@@ -2078,7 +2087,6 @@ int decodeMovementField(int movement) {
 
 double haversine(double lat1, double lon1, double lat2, double lon2)
 {
-    double R_earth = 6371; // Radius of Earth [km]
     double lat1r = lat1*0.0174533; // in radians
     double lon1r = lon1*0.0174533; // in radians
     double lat2r = lat2*0.0174533; // in radians
@@ -2090,7 +2098,16 @@ double haversine(double lat1, double lon1, double lat2, double lon2)
     double a = pow(sin(dlat/2), 2) + cos(lat1r)*cos(lat2r)*pow(sin(dlon/2),2);
     double c = 2*atan2(sqrt(a), sqrt(1-a));
 
-    return R_earth*c;
+    return c;
+}
+
+double lineOfSight(double lat1, double lon1, double lat2, double lon2, double alt, double elev)
+{
+    alt /= 3282.8; // convert to km
+
+    double c = haversine(lat1,lon1,lat2,lon2);
+
+    return (R_EARTH + alt)*sin(c)/sin(M_PI/2 + elev*0.0174533); // [km]
 }
 
 double bearing(double lat1, double lon1, double lat2, double lon2)
@@ -2102,8 +2119,7 @@ double bearing(double lat1, double lon1, double lat2, double lon2)
     //double dlat = (lat1r-lat2r); // difference between target and station latitudes [radian]
     double dlon = (lon1r-lon2r); // difference between target and station longitudes [radian]
     double theta = atan2(sin(dlon)*cos(lat2r), cos(lat1r)*sin(lat2r) - sin(lat1r)*cos(lat2r)*cos(dlon));
-    //return 180.0*theta/3.14159;
-    return fmod(180*theta/3.14159 + 360,360);
+    return fmod(180*theta/M_PI + 360,360);
 }
 
 double elevation(double alt, double dist)
@@ -2212,9 +2228,10 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     // LIAM
     if (a->lat !=0 || a->lon !=0)
     {
-        a->distance  = haversine(STATION_LAT, STATION_LON, a->lat, a->lon);
+        a->distance  = R_EARTH * haversine(STATION_LAT, STATION_LON, a->lat, a->lon);
         a->bearing   = bearing(STATION_LAT, STATION_LON, a->lat, a->lon);
         a->elevation = elevation(a->altitude, a->distance);
+        a->los       = lineOfSight(STATION_LAT, STATION_LON, a->lat, a->lon, a->altitude, a->elevation);
     }
     return a;
 }
@@ -2232,11 +2249,12 @@ void interactiveShowData(void) {
     progress[3] = '\0';
 
     printf("\x1b[H\x1b[2J");    /* Clear the screen */
-    printf(
-"Hex    Flight   Altitude  Speed   Lat       Lon      Track  Messages   Dist [km] Bear[\u00B0] Elev[\u00B0]   Seen %s\n"
-"------------------------------------------------------------------------------------------------------\n",
-        progress);
 
+    printf(
+"Hex    Flight   Altitude  Speed   Lat       Lon      Track  Messages   Dist[km] Bear[\u00B0] Elev[\u00B0] LOS[km]  Seen %s\n"
+"--------------------------------------------------------------------------------------------------------------\n",
+        progress);
+    
     // LIAM
     while(a && count < Modes.interactive_rows) {
         int altitude = a->altitude, speed = a->speed;
@@ -2246,12 +2264,64 @@ void interactiveShowData(void) {
             altitude /= 3.2828;
             speed *= 1.852;
         }
+        if (a->distance < 10 && a->elevation > 40)
+        {
+            printf("\x1b[32m"); // Set text colour for line if plane tracked
 
-        printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f \t%d sec\n",
+            printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f    %-5.01f \t%d sec\n",
+                a->hexaddr, a->flight, altitude, speed,
+                a->lat, a->lon, a->track, a->messages,
+                a->distance, a->bearing, a->elevation, a->los,
+                (int)(now - a->seen));
+            printf("\x1b[0m"); // Reset colour
+        }
+        a = a->next;
+        count++;
+    }
+    count=0; a = Modes.aircrafts;
+    while(a && count < Modes.interactive_rows) {
+        int altitude = a->altitude, speed = a->speed;
+
+        if (Modes.metric) {
+            altitude /= 3.2828;
+            speed *= 1.852;
+        }
+        if ((a->lat == 0 || a->lon == 0) || (a->distance < 10 && a->elevation > 40))
+        {
+            a = a->next;
+            count++;
+            continue;
+        }
+        printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f    %-5.01f  \t%d sec\n",
             a->hexaddr, a->flight, altitude, speed,
             a->lat, a->lon, a->track, a->messages,
-            a->distance, a->bearing, a->elevation,
+            a->distance, a->bearing, a->elevation, a->los,
             (int)(now - a->seen));
+         
+        printf("\x1b[0m"); // Reset colour
+        a = a->next;
+        count++;
+    }
+    count=0; a = Modes.aircrafts;
+    while(a && count < Modes.interactive_rows) {
+        int altitude = a->altitude, speed = a->speed;
+
+        if (Modes.metric) {
+            altitude /= 3.2828;
+            speed *= 1.852;
+        }
+        if (a->lat ==0 || a->lon ==0)
+        {
+            printf("\x1b[31m"); // Set text colour red if plane not tracked
+         
+            printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f    %-5.01f  \t%d sec\n",
+                a->hexaddr, a->flight, altitude, speed,
+                a->lat, a->lon, a->track, a->messages,
+                a->distance, a->bearing, a->elevation, a->los,
+                (int)(now - a->seen));
+
+            printf("\x1b[0m"); // Reset colour
+        }
         a = a->next;
         count++;
     }
