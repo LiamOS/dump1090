@@ -2117,7 +2117,7 @@ double bearing(double lat1, double lon1, double lat2, double lon2)
     double lat2r = lat2*0.0174533; // in radians
     double lon2r = lon2*0.0174533; // in radians
     //double dlat = (lat1r-lat2r); // difference between target and station latitudes [radian]
-    double dlon = (lon1r-lon2r); // difference between target and station longitudes [radian]
+    double dlon = (lon2r-lon1r); // difference between target and station longitudes [radian]
     double theta = atan2(sin(dlon)*cos(lat2r), cos(lat1r)*sin(lat2r) - sin(lat1r)*cos(lat2r)*cos(dlon));
     return fmod(180*theta/M_PI + 360,360);
 }
@@ -2229,6 +2229,7 @@ struct aircraft *interactiveReceiveData(struct modesMessage *mm) {
     if (a->lat !=0 || a->lon !=0)
     {
         a->distance  = R_EARTH * haversine(STATION_LAT, STATION_LON, a->lat, a->lon);
+        //a->bearing   = bearing(a->lat, a->lon, STATION_LAT, STATION_LON);
         a->bearing   = bearing(STATION_LAT, STATION_LON, a->lat, a->lon);
         a->elevation = elevation(a->altitude, a->distance);
         a->los       = lineOfSight(STATION_LAT, STATION_LON, a->lat, a->lon, a->altitude, a->elevation);
@@ -2268,9 +2269,10 @@ void interactiveShowData(void) {
         {
             printf("\x1b[32m"); // Set text colour for line if plane tracked
 
-            printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f    %-5.01f \t%d sec\n",
+            printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f   %-3.00f   %-2.00f    %-5.01f \t%d sec\n",
                 a->hexaddr, a->flight, altitude, speed,
-                a->lat, a->lon, a->track, a->messages,
+                //a->lat, a->lon, a->track, a->messages,
+                a->lat - STATION_LAT, a->lon - STATION_LON, a->track, a->messages,
                 a->distance, a->bearing, a->elevation, a->los,
                 (int)(now - a->seen));
             printf("\x1b[0m"); // Reset colour
@@ -2294,7 +2296,8 @@ void interactiveShowData(void) {
         }
         printf("%-6s %-8s %-9d %-7d %-7.03f   %-7.03f   %-3d   %-9ld    %-5.01f    %-3.00f   %-2.00f    %-5.01f  \t%d sec\n",
             a->hexaddr, a->flight, altitude, speed,
-            a->lat, a->lon, a->track, a->messages,
+            //a->lat, a->lon, a->track, a->messages,
+            a->lat - STATION_LAT, a->lon - STATION_LON, a->track, a->messages,
             a->distance, a->bearing, a->elevation, a->los,
             (int)(now - a->seen));
          
